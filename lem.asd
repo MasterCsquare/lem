@@ -316,6 +316,7 @@
                "lem-skk-mode"
                "lem-emacs-help-mode"
                "lem-display-time-mode"
+               "lem-spell-check"
                "lem-tramp"
                "lem-trans"
                "lem-winner-mode"))
