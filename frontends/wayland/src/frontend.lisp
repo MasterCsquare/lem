@@ -19,15 +19,37 @@
 (defparameter *default-background-color* (lem:make-color 30 30 30))
 
 (defparameter *super-keybindings*
-  '(("s-x" . lem:execute-command)
-    ("s-f" . lem:find-file)
-    ("s-b" . lem:select-buffer)
-    ("s-k" . lem:kill-buffer)
-    ("s-1" . lem:delete-other-windows)
-    ("s-2" . lem:split-active-window-vertically)
-    ("s-3" . lem:split-active-window-horizontally)
-    ("s-0" . lem:delete-active-window)
+  '(;; Lem commands open in a Lem window instead of replacing a client's.
+    ("s-x" . wayland-execute-command)
+    ("s-f" . wayland-find-file)
+    ("s-b" . wayland-select-buffer)
+    ("s-Shift-k" . wayland-kill-buffer)
+    ;; Bindings modelled after EXWM's window management.
+    ("s-r" . run-wayland-program)
+    ("s-c" . close-active-client)
+    ("s-n" . new-lem-window)
+    ("s-1" . wayland-delete-other-windows)
+    ("s-2" . wayland-split-below)
+    ("s-3" . wayland-split-right)
+    ("s-0" . wayland-delete-active-window)
     ("s-o" . lem:next-window)
+    ("s-p" . lem:previous-window)
+    ("s-h" . lem:window-move-left)
+    ("s-j" . lem:window-move-down)
+    ("s-k" . lem:window-move-up)
+    ("s-l" . lem:window-move-right)
+    ("s-Left" . lem:window-move-left)
+    ("s-Down" . lem:window-move-down)
+    ("s-Up" . lem:window-move-up)
+    ("s-Right" . lem:window-move-right)
+    ("s-Shift-h" . lem:grow-window-horizontally)
+    ("s-Shift-l" . lem:shrink-window-horizontally)
+    ("s-Shift-k" . lem:grow-window)
+    ("s-Shift-j" . lem:shrink-window)
+    ("s-Space" . toggle-active-window-floating)
+    ("s-=" . lem:balance-windows)
+    ("s-]" . select-next-client)
+    ("s-[" . select-previous-client)
     ("s-q" . lem:exit-lem)))
 
 (defclass wayland (lem:implementation)
@@ -90,13 +112,47 @@
     :accessor wayland-clients)
    (clients-by-buffer
     :initform (make-hash-table :test #'eq)
-    :accessor wayland-clients-by-buffer))
+    :accessor wayland-clients-by-buffer)
+   ;; Last global pointer position in layout pixels.  The compositor reports
+   ;; motion even while a client surface has pointer focus, so this stays
+   ;; useful for LEM-IF:GET-MOUSE-POSITION and hover highlighting.
+   (pointer-pixel-x
+    :initform -1.0d0
+    :accessor wayland-pointer-pixel-x)
+   (pointer-pixel-y
+    :initform -1.0d0
+    :accessor wayland-pointer-pixel-y)
+   (pointer-button
+    :initform nil
+    :accessor wayland-pointer-button)
+   (last-click-button
+    :initform nil
+    :accessor wayland-last-click-button)
+   (last-click-time
+    :initform 0
+    :accessor wayland-last-click-time)
+   (last-click-x
+    :initform 0.0d0
+    :accessor wayland-last-click-x)
+   (last-click-y
+    :initform 0.0d0
+    :accessor wayland-last-click-y)
+   (click-count
+    :initform 0
+    :accessor wayland-click-count)
+   ;; Fractional wheel deltas from touchpads are accumulated until a whole
+   ;; line can be scrolled.
+   (wheel-accumulator
+    :initform 0.0d0
+    :accessor wayland-wheel-accumulator))
   (:default-initargs
    :name :wayland
    :support-floating-window t
    :redraw-after-modifying-floating-window t
    :underline-color-support t
-   :window-left-margin 0
+   ;; One column between side-by-side windows gives Lem a draggable vertical
+   ;; separator.  Stacked windows use their modelines as separators.
+   :window-left-margin 1
    :window-bottom-margin 0))
 
 ;;;; Per-view Cairo state and per-client bookkeeping
@@ -193,6 +249,82 @@
 
 (defun live-buffer-p (buffer)
   (and buffer (not (lem:deleted-buffer-p buffer))))
+
+(defun client-for-any-buffer (implementation buffer)
+  "Return the client displaying BUFFER, either as itself or as a placeholder."
+  (and buffer
+       (or (client-for-buffer implementation buffer)
+           (block found
+             (maphash
+              (lambda (id client)
+                (declare (ignore id))
+                (let ((placeholder (client-placeholder client)))
+                  (when (and (live-buffer-p placeholder)
+                             (eq buffer placeholder))
+                    (return-from found client))))
+              (wayland-clients implementation))))))
+
+(defun client-for-window (implementation window)
+  (and window
+       (not (lem:deleted-window-p window))
+       (client-for-any-buffer implementation (lem:window-buffer window))))
+
+(defun client-windows (implementation client)
+  "Return every live window displaying CLIENT or its placeholder."
+  (declare (ignore implementation))
+  (remove-if #'lem:deleted-window-p
+             (remove-duplicates
+              (append
+               (let ((buffer (client-buffer client)))
+                 (when (live-buffer-p buffer)
+                   (lem:get-buffer-windows buffer :include-floating-windows t)))
+               (let ((placeholder (client-placeholder client)))
+                 (when (live-buffer-p placeholder)
+                   (lem:get-buffer-windows placeholder
+                                           :include-floating-windows t))))
+              :test #'eq)))
+
+(defun client-window-list (implementation)
+  "Return visible clients in Lem's window ordering, starting at the top left."
+  (let ((clients '()))
+    (dolist (window (lem:compute-window-list (lem:current-window)))
+      (let ((client (client-for-window implementation window)))
+        (when (and client (not (member client clients :test #'eq)))
+          (push client clients))))
+    (nreverse clients)))
+
+(defun current-tiling-window ()
+  (let ((window (lem:current-window)))
+    (if (lem:floating-window-p window)
+        (or (find-if-not #'lem:floating-window-p (lem:window-list))
+            window)
+        window)))
+
+(defun ensure-tiling-current-window ()
+  "Make the current window a tiled one, returning it."
+  (let ((window (current-tiling-window)))
+    (unless (eq window (lem:current-window))
+      (lem:switch-to-window window))
+    window))
+
+(defun new-scratch-buffer (implementation)
+  (declare (ignore implementation))
+  (let ((buffer (lem:make-buffer (lem:unique-buffer-name "*wayland*")
+                                 :temporary t
+                                 :enable-undo-p nil)))
+    (lem:insert-string (lem:buffer-point buffer)
+                       "Scratch window.  Use s-b to select a buffer.\n")
+    (lem:buffer-start (lem:buffer-point buffer))
+    buffer))
+
+(defun choose-fallback-buffer (implementation &rest excluded)
+  "Pick a non-client buffer to keep a window alive, or create a scratch one."
+  (or (find-if (lambda (buffer)
+                 (and (live-buffer-p buffer)
+                      (not (member buffer excluded :test #'eq))
+                      (not (client-for-any-buffer implementation buffer))))
+               (lem:buffer-list))
+      (new-scratch-buffer implementation)))
 
 (defun view-window-live-p (view)
   (let ((window (view-window view)))
@@ -606,6 +738,94 @@
 (defmethod lem-if:get-char-height ((implementation wayland))
   (wayland-char-height implementation))
 
+;;;; Mouse input from the compositor
+;;;
+;;; Coordinates arrive as global layout pixels.  Lem's mouse API takes both
+;;; character and pixel coordinates, and only receives events that belong to
+;;; Lem windows; the compositor keeps client-surface pointer input to itself.
+
+(defun pointer-char-position (implementation x y)
+  (values (floor x (max 1 (wayland-char-width implementation)))
+          (floor y (max 1 (wayland-char-height implementation)))))
+
+(defmethod lem-if:get-mouse-position ((implementation wayland))
+  (if (minusp (wayland-pointer-pixel-x implementation))
+      (values -1 -1)
+      (pointer-char-position implementation
+                             (wayland-pointer-pixel-x implementation)
+                             (wayland-pointer-pixel-y implementation))))
+
+(defun record-lem-pointer-position (implementation x y)
+  (setf (wayland-pointer-pixel-x implementation) (d x)
+        (wayland-pointer-pixel-y implementation) (d y))
+  (values x y))
+
+(defun handle-lem-pointer-motion (implementation x y)
+  (record-lem-pointer-position implementation x y)
+  (multiple-value-bind (char-x char-y)
+      (pointer-char-position implementation x y)
+    (let ((pixel-x (round x))
+          (pixel-y (round y))
+          (button (wayland-pointer-button implementation)))
+      (lem:send-event
+       (lambda ()
+         (lem:receive-mouse-motion char-x char-y pixel-x pixel-y button))))))
+
+(defun lem-pointer-click-count (implementation x y button)
+  (let* ((now (get-internal-real-time))
+         (elapsed (/ (- now (wayland-last-click-time implementation))
+                     (coerce internal-time-units-per-second 'double-float)))
+         (same-button (eq button (wayland-last-click-button implementation)))
+         (near (and (<= (abs (- x (wayland-last-click-x implementation))) 5.0d0)
+                    (<= (abs (- y (wayland-last-click-y implementation))) 5.0d0)))
+         (count (if (and same-button near (<= elapsed 0.5d0))
+                    (let ((next (1+ (wayland-click-count implementation))))
+                      (if (< next 3) next 1))
+                    1)))
+    (setf (wayland-last-click-button implementation) button
+          (wayland-last-click-time implementation) now
+          (wayland-last-click-x implementation) (d x)
+          (wayland-last-click-y implementation) (d y)
+          (wayland-click-count implementation) count)
+    count))
+
+(defun handle-lem-pointer-button (implementation x y button pressed)
+  (record-lem-pointer-position implementation x y)
+  (multiple-value-bind (char-x char-y)
+      (pointer-char-position implementation x y)
+    (let ((pixel-x (round x))
+          (pixel-y (round y)))
+      (if pressed
+          (let ((clicks (lem-pointer-click-count implementation x y button)))
+            (setf (wayland-pointer-button implementation) button)
+            (lem:send-event
+             (lambda ()
+               (lem:receive-mouse-button-down
+                char-x char-y pixel-x pixel-y button clicks))))
+          (progn
+            (when (eq button (wayland-pointer-button implementation))
+              (setf (wayland-pointer-button implementation) nil))
+            (lem:send-event
+             (lambda ()
+               (lem:receive-mouse-button-up
+                char-x char-y pixel-x pixel-y button))))))))
+
+(defun handle-lem-pointer-wheel (implementation x y wheel-y)
+  (record-lem-pointer-position implementation x y)
+  (let ((pending (+ (wayland-wheel-accumulator implementation) wheel-y)))
+    (multiple-value-bind (char-x char-y)
+        (pointer-char-position implementation x y)
+      (let ((steps (truncate pending))
+            (pixel-x (round x))
+            (pixel-y (round y)))
+        (setf (wayland-wheel-accumulator implementation) (- pending steps))
+        (unless (zerop steps)
+          (lem:send-event
+           (lambda ()
+             (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y 0 steps)
+             (when (= 0 (lem:event-queue-length))
+               (lem:redraw-display)))))))))
+
 ;;;; Lem interface: views
 
 (defmethod lem-if:make-view ((implementation wayland)
@@ -1005,9 +1225,29 @@
   (unless (lem:active-prompt-window)
     (lem:switch-to-window window)))
 
+(defun focus-client-window (implementation client)
+  "Show CLIENT in one of its windows, restoring a window if it is hidden."
+  (let ((windows (client-windows implementation client)))
+    (if windows
+        (let ((window (or (find (lem:current-window) windows :test #'eq)
+                          (first windows))))
+          (unless (eq window (lem:current-window))
+            (lem:switch-to-window window)))
+        (let ((buffer (client-buffer client)))
+          (when (live-buffer-p buffer)
+            (unless (lem:active-prompt-window)
+              (ensure-tiling-current-window))
+            (select-mapped-client-window
+             (lem:pop-to-buffer buffer :split-action :sensibly))))))
+  (lem:redraw-display))
+
 (defun map-client-tiled (implementation client buffer)
+  ;; :SENSIBLY is required: with more than one window the default split
+  ;; action reuses (and thus clobbers) an existing window's buffer.
   (declare (ignore implementation))
-  (let ((window (lem:pop-to-buffer buffer)))
+  (unless (lem:active-prompt-window)
+    (ensure-tiling-current-window))
+  (let ((window (lem:pop-to-buffer buffer :split-action :sensibly)))
     (select-mapped-client-window window)
     (setf (client-window client) window)))
 
@@ -1061,6 +1301,34 @@
       (when window
         (lem:switch-to-window window)))))
 
+(defun remove-window-for-destroyed-client (implementation client window)
+  "Remove WINDOW when CLIENT exits, keeping at least one Lem window alive."
+  (cond
+    ((or (null window) (lem:deleted-window-p window))
+     nil)
+    ((lem:floating-window-p window)
+     (when (eq window (lem:current-window))
+       (switch-to-tiled-window-if-possible))
+     (ignore-errors (lem:delete-window window)))
+    ;; Lem refuses to delete the last tiled window.  Turn it into a normal
+    ;; editor window instead of leaving a dead client buffer behind.
+    ((lem:one-window-p)
+     (ignore-errors
+       (lem:switch-to-buffer
+        (choose-fallback-buffer implementation
+                                (client-buffer client)
+                                (client-placeholder client)))))
+    (t
+     (when (eq window (lem:current-window))
+       (let ((other (find-if (lambda (candidate)
+                               (and (not (eq candidate window))
+                                    (not (lem:deleted-window-p candidate))))
+                             (lem:window-list))))
+         (when other
+           (lem:switch-to-window other))))
+     (ignore-errors (lem:delete-window window))))
+  (values))
+
 (defun handle-toplevel-destroyed (implementation id)
   (let ((client (gethash id (wayland-clients implementation))))
     (when client
@@ -1084,17 +1352,16 @@
                              (not (lem:deleted-window-p client-window)))
                     (list client-window)))
                  :test #'eq)))
-          ;; Floating windows belonging to the client disappear with it.
+          ;; Every window that existed only for this client goes away; the
+          ;; buffer itself is removed below.  Closing a client should shrink
+          ;; the tiling layout, like closing a window in EXWM.
           (dolist (window windows)
-            (when (and (not (lem:deleted-window-p window))
-                       (lem:floating-window-p window))
-              (when (eq window (lem:current-window))
-                (switch-to-tiled-window-if-possible))
-              (ignore-errors (lem:delete-window window)))))
+            (remove-window-for-destroyed-client implementation client window)))
         (when (live-buffer-p placeholder)
           (lem:delete-buffer placeholder))
         (when (live-buffer-p buffer)
           (lem:delete-buffer buffer))
+        (ignore-errors (lem:balance-windows))
         (lem:redraw-display)))))
 
 (defun handle-toplevel-title-changed (implementation id title app-id)
@@ -1173,7 +1440,19 @@
         (lambda (width height)
           (lem:send-event
            (lambda ()
-             (handle-output-changed implementation width height))))))
+             (handle-output-changed implementation width height))))
+        *pointer-position-function*
+        (lambda (x y)
+          (record-lem-pointer-position implementation x y))
+        *pointer-motion-function*
+        (lambda (x y)
+          (handle-lem-pointer-motion implementation x y))
+        *pointer-button-function*
+        (lambda (x y button pressed)
+          (handle-lem-pointer-button implementation x y button pressed))
+        *pointer-axis-function*
+        (lambda (x y wheel-y)
+          (handle-lem-pointer-wheel implementation x y wheel-y))))
 
 (defun uninstall-frontend-callbacks ()
   (setf *toplevel-mapped-function* nil
@@ -1181,7 +1460,11 @@
         *toplevel-title-changed-function* nil
         *focus-view-function* nil
         *focus-client-function* nil
-        *output-changed-function* nil))
+        *output-changed-function* nil
+        *pointer-position-function* nil
+        *pointer-motion-function* nil
+        *pointer-button-function* nil
+        *pointer-axis-function* nil))
 
 (defun install-super-keybindings ()
   (dolist (binding *super-keybindings*)

@@ -14,6 +14,12 @@
 (defconstant +wl-pointer-button-state-released+ 0)
 (defconstant +wl-pointer-button-state-pressed+ 1)
 
+;;; Linux evdev button codes delivered in wlr_pointer_button_event.button.
+
+(defconstant +btn-left+ #x110)
+(defconstant +btn-right+ #x111)
+(defconstant +btn-middle+ #x112)
+
 (defconstant +wl-pointer-axis-vertical-scroll+ 0)
 (defconstant +wl-pointer-axis-horizontal-scroll+ 1)
 (defconstant +wl-pointer-axis-source-wheel+ 0)
@@ -58,6 +64,14 @@
 (defvar *focus-view-function* nil)
 (defvar *focus-client-function* nil)
 (defvar *output-changed-function* nil)
+
+;;; Pointer events that belong to Lem rather than to a client surface.
+;;; Coordinates are global layout pixels.
+
+(defvar *pointer-position-function* nil)
+(defvar *pointer-motion-function* nil)
+(defvar *pointer-button-function* nil)
+(defvar *pointer-axis-function* nil)
 
 (defun notify-output-changed (compositor)
   (when *output-changed-function*
@@ -130,6 +144,12 @@
   destroy-listener
   surface-destroy-listener
   commit-listener
+  request-maximize-listener
+  request-fullscreen-listener
+  request-minimize-listener
+  request-move-listener
+  request-resize-listener
+  request-show-window-menu-listener
   set-title-listener
   set-app-id-listener
   set-parent-listener
@@ -173,6 +193,8 @@
                                         :accessor compositor-seat-request-set-selection-listener)
    (seat-request-set-primary-selection-listener :initform nil
                                                 :accessor compositor-seat-request-set-primary-selection-listener)
+   (seat-request-set-cursor-listener :initform nil
+                                     :accessor compositor-seat-request-set-cursor-listener)
    (cursor :initform nil :accessor compositor-cursor)
    (xcursor-manager :initform nil :accessor compositor-xcursor-manager)
    (keyboard :initform nil :accessor compositor-keyboard)
@@ -185,6 +207,14 @@
    (pointer-focused-surface :initform nil :accessor compositor-pointer-focused-surface)
    (pointer-surface-x :initform 0.0d0 :accessor compositor-pointer-surface-x)
    (pointer-surface-y :initform 0.0d0 :accessor compositor-pointer-surface-y)
+   ;; Layout-space origin of POINTER-FOCUSED-SURFACE, used to keep sending
+   ;; motion to a client while a button drags the pointer outside of it.
+   (pointer-focus-origin-x :initform 0.0d0 :accessor compositor-pointer-focus-origin-x)
+   (pointer-focus-origin-y :initform 0.0d0 :accessor compositor-pointer-focus-origin-y)
+   ;; :LEM or :CLIENT while a pointer button is held.  A grab keeps every
+   ;; event of the drag on the side that received the initial press.
+   (pointer-grab :initform nil :accessor compositor-pointer-grab)
+   (pointer-grab-buttons :initform '() :accessor compositor-pointer-grab-buttons)
    (primary-output :initform nil :accessor compositor-primary-output)
    (output-width :initform 0 :type fixnum :accessor compositor-output-width)
    (output-height :initform 0 :type fixnum :accessor compositor-output-height)
@@ -504,11 +534,71 @@ see being pressed."
                         (cffi:mem-ref nx :double)
                         (cffi:mem-ref ny :double))))))))))
 
+(defun restore-default-cursor (compositor)
+  (let ((cursor (compositor-cursor compositor))
+        (manager (compositor-xcursor-manager compositor)))
+    (when cursor
+      (%wlr-cursor-set-surface cursor (cffi:null-pointer) 0 0)
+      (when manager
+        (%wlr-cursor-set-xcursor cursor manager "left_ptr")))))
+
 (defun clear-pointer-focus (compositor)
   (when (compositor-pointer-focused-surface compositor)
     (when (compositor-seat compositor)
       (%wlr-seat-pointer-notify-clear-focus (compositor-seat compositor)))
-    (setf (compositor-pointer-focused-surface compositor) nil)))
+    (setf (compositor-pointer-focused-surface compositor) nil)
+    (restore-default-cursor compositor)))
+
+(defun notify-lem-pointer-position (compositor x y)
+  (declare (ignore compositor))
+  (when *pointer-position-function*
+    (funcall *pointer-position-function* x y)))
+
+(defun notify-lem-pointer-motion (compositor x y)
+  (declare (ignore compositor))
+  (when *pointer-motion-function*
+    (funcall *pointer-motion-function* x y)))
+
+(defun notify-lem-pointer-button (compositor x y button pressed)
+  (declare (ignore compositor))
+  (when *pointer-button-function*
+    (funcall *pointer-button-function* x y button pressed)))
+
+(defun notify-lem-pointer-axis (compositor x y wheel-y)
+  (declare (ignore compositor))
+  (when *pointer-axis-function*
+    (funcall *pointer-axis-function* x y wheel-y)))
+
+(defun evdev-button->lem-button (button)
+  "Translate a Linux evdev button code to Lem's mouse button keyword."
+  (cond ((= button +btn-left+) :button-1)
+        ((= button +btn-right+) :button-3)
+        ((= button +btn-middle+) :button-2)
+        (t nil)))
+
+(defun pointer-grab-active-p (compositor)
+  (not (null (compositor-pointer-grab compositor))))
+
+(defun pointer-grab-owns-surface-p (compositor)
+  "True when pointer motion belongs to the focused client surface."
+  (let ((surface (compositor-pointer-focused-surface compositor)))
+    (and (eq (compositor-pointer-grab compositor) :client)
+         surface
+         (not (null-pointer-p surface)))))
+
+(defun track-pointer-grab-button (compositor button pressed)
+  (if pressed
+      (pushnew button (compositor-pointer-grab-buttons compositor))
+      (setf (compositor-pointer-grab-buttons compositor)
+            (delete button (compositor-pointer-grab-buttons compositor))))
+  (when (and (not pressed)
+             (null (compositor-pointer-grab-buttons compositor)))
+    (setf (compositor-pointer-grab compositor) nil)))
+
+(defun pointer-local-coordinates (compositor x y)
+  "Convert global layout coordinates to coordinates inside the grabbed surface."
+  (values (- x (compositor-pointer-focus-origin-x compositor))
+          (- y (compositor-pointer-focus-origin-y compositor))))
 
 (defun toplevel-for-surface (compositor surface)
   (when (and surface (not (null-pointer-p surface)))
@@ -538,14 +628,81 @@ see being pressed."
       t)))
 
 (defun ensure-pointer-focus (compositor surface sx sy)
-  (unless (and (compositor-pointer-focused-surface compositor)
-               (cffi:pointer-eq surface
-                                (compositor-pointer-focused-surface compositor)))
-    (%wlr-seat-pointer-notify-enter
-     (compositor-seat compositor) surface sx sy)
-    (setf (compositor-pointer-focused-surface compositor) surface))
-  (setf (compositor-pointer-surface-x compositor) sx
-        (compositor-pointer-surface-y compositor) sy))
+  (unless (or (null surface) (null-pointer-p surface))
+    (let ((old (compositor-pointer-focused-surface compositor)))
+      (unless (and old (cffi:pointer-eq surface old))
+        (when old
+          ;; A surface may have installed its own cursor image; go back to
+          ;; the compositor's default before the next client takes over.
+          (restore-default-cursor compositor))
+        (when (compositor-seat compositor)
+          (%wlr-seat-pointer-notify-enter
+           (compositor-seat compositor) surface sx sy))
+        (setf (compositor-pointer-focused-surface compositor) surface)))
+    (setf (compositor-pointer-surface-x compositor) sx
+          (compositor-pointer-surface-y compositor) sy)
+    (let ((cursor (compositor-cursor compositor)))
+      (when cursor
+        (setf (compositor-pointer-focus-origin-x compositor)
+              (- (double-at cursor +wlr-cursor-x+) sx)
+              (compositor-pointer-focus-origin-y compositor)
+              (- (double-at cursor +wlr-cursor-y+) sy))))))
+
+(defun notify-client-pointer-axis (compositor event)
+  (let ((seat (compositor-seat compositor)))
+    (when seat
+      (%wlr-seat-pointer-notify-axis
+       seat
+       (u32-at event +wlr-pointer-axis-time+)
+       (u32-at event +wlr-pointer-axis-orientation+)
+       (double-at event +wlr-pointer-axis-delta+)
+       (i32-at event +wlr-pointer-axis-delta-discrete+)
+       (u32-at event +wlr-pointer-axis-source+)
+       (i32-at event +wlr-pointer-axis-relative-direction+)))))
+
+(defun pointer-axis-steps (event)
+  "Return the wheel amount in Lem units (positive means up)."
+  (let ((discrete (i32-at event +wlr-pointer-axis-delta-discrete+))
+        (delta (double-at event +wlr-pointer-axis-delta+)))
+    ;; Wayland's positive axis delta means scrolling down, while Lem's
+    ;; positive wheel-y means scrolling up.
+    (- (if (/= discrete 0) discrete delta))))
+
+(defun notify-lem-wheel (compositor event x y)
+  (when (= (u32-at event +wlr-pointer-axis-orientation+) 0)
+    (let ((steps (pointer-axis-steps event)))
+      (unless (zerop steps)
+        (notify-lem-pointer-axis compositor x y steps)))))
+
+(defun resume-pointer-hover (compositor surface sx sy)
+  "Update pointer focus after a grab ends; SURFACE is under the cursor."
+  (if (or (null surface) (null-pointer-p surface))
+      (clear-pointer-focus compositor)
+      (ensure-pointer-focus compositor surface sx sy)))
+
+(defun handle-pointer-motion-at (compositor time x y)
+  (notify-lem-pointer-position compositor x y)
+  (cond
+    ((eq (compositor-pointer-grab compositor) :lem)
+     ;; A Lem drag keeps receiving the global position even over clients.
+     (clear-pointer-focus compositor)
+     (notify-lem-pointer-motion compositor x y))
+    ((pointer-grab-owns-surface-p compositor)
+     (multiple-value-bind (lx ly) (pointer-local-coordinates compositor x y)
+       (when (compositor-seat compositor)
+         (%wlr-seat-pointer-notify-motion
+          (compositor-seat compositor) time lx ly))))
+    (t
+     (multiple-value-bind (surface sx sy) (scene-surface-at compositor x y)
+       (if (or (null surface) (null-pointer-p surface))
+           (progn
+             (clear-pointer-focus compositor)
+             (notify-lem-pointer-motion compositor x y))
+           (progn
+             (ensure-pointer-focus compositor surface sx sy)
+             (when (compositor-seat compositor)
+               (%wlr-seat-pointer-notify-motion
+                (compositor-seat compositor) time sx sy))))))))
 
 (defun handle-pointer-motion (compositor event)
   (let ((cursor (compositor-cursor compositor))
@@ -556,24 +713,10 @@ see being pressed."
                         device
                         (double-at event +wlr-pointer-motion-delta-x+)
                         (double-at event +wlr-pointer-motion-delta-y+))
-      (let ((x (double-at cursor +wlr-cursor-x+))
-            (y (double-at cursor +wlr-cursor-y+)))
-        (multiple-value-bind (surface sx sy)
-            (scene-surface-at compositor x y)
-          (if (null-pointer-p surface)
-              (clear-pointer-focus compositor)
-              (progn
-                (unless (and (compositor-pointer-focused-surface compositor)
-                             (cffi:pointer-eq
-                              surface
-                              (compositor-pointer-focused-surface compositor)))
-                  (%wlr-seat-pointer-notify-enter
-                   (compositor-seat compositor) surface sx sy)
-                  (setf (compositor-pointer-focused-surface compositor) surface))
-                (setf (compositor-pointer-surface-x compositor) sx
-                      (compositor-pointer-surface-y compositor) sy)
-                (%wlr-seat-pointer-notify-motion
-                 (compositor-seat compositor) time sx sy))))))))
+      (handle-pointer-motion-at compositor
+                                time
+                                (double-at cursor +wlr-cursor-x+)
+                                (double-at cursor +wlr-cursor-y+)))))
 
 (defun handle-pointer-motion-absolute (compositor event)
   (let ((cursor (compositor-cursor compositor))
@@ -584,24 +727,10 @@ see being pressed."
                                  device
                                  (double-at event +wlr-pointer-motion-absolute-x+)
                                  (double-at event +wlr-pointer-motion-absolute-y+))
-      (multiple-value-bind (surface sx sy)
-          (scene-surface-at compositor
-                            (double-at cursor +wlr-cursor-x+)
-                            (double-at cursor +wlr-cursor-y+))
-        (if (null-pointer-p surface)
-            (clear-pointer-focus compositor)
-            (progn
-              (unless (and (compositor-pointer-focused-surface compositor)
-                           (cffi:pointer-eq
-                            surface
-                            (compositor-pointer-focused-surface compositor)))
-                (%wlr-seat-pointer-notify-enter
-                 (compositor-seat compositor) surface sx sy)
-                (setf (compositor-pointer-focused-surface compositor) surface))
-              (setf (compositor-pointer-surface-x compositor) sx
-                    (compositor-pointer-surface-y compositor) sy)
-              (%wlr-seat-pointer-notify-motion
-               (compositor-seat compositor) time sx sy)))))))
+      (handle-pointer-motion-at compositor
+                                time
+                                (double-at cursor +wlr-cursor-x+)
+                                (double-at cursor +wlr-cursor-y+)))))
 
 (defun handle-pointer-button (compositor event)
   (let* ((cursor (compositor-cursor compositor))
@@ -609,38 +738,84 @@ see being pressed."
          (time (u32-at event +wlr-pointer-button-time+))
          (button (u32-at event +wlr-pointer-button-button+))
          (state (u32-at event +wlr-pointer-button-state+))
-         (pressed (= state +wl-pointer-button-state-pressed+)))
+         (pressed (= state +wl-pointer-button-state-pressed+))
+         (lem-button (evdev-button->lem-button button)))
     (when cursor
-      (multiple-value-bind (surface sx sy)
-          (scene-surface-at compositor
-                            (double-at cursor +wlr-cursor-x+)
-                            (double-at cursor +wlr-cursor-y+))
-        (if (null-pointer-p surface)
-            (progn
-              (clear-pointer-focus compositor)
-              (when pressed
-                (focus-lem-content compositor)))
-            (when seat
-              (ensure-pointer-focus compositor surface sx sy)
-              (when pressed
-                (let ((toplevel (toplevel-for-surface compositor surface)))
-                  (when (and toplevel *focus-client-function*)
-                    (funcall *focus-client-function*
-                             (wayland-toplevel-id toplevel)))))
-              (%wlr-seat-pointer-notify-button
-               seat time button state)))))))
+      (let ((x (double-at cursor +wlr-cursor-x+))
+            (y (double-at cursor +wlr-cursor-y+)))
+        (notify-lem-pointer-position compositor x y)
+        (multiple-value-bind (surface sx sy) (scene-surface-at compositor x y)
+          (let ((surface (unless (null-pointer-p surface) surface)))
+            (cond
+              ;; A grab owns every button until its last press is released.
+              ((pointer-grab-active-p compositor)
+               (let ((grab (compositor-pointer-grab compositor)))
+                 (track-pointer-grab-button compositor button pressed)
+                 (ecase grab
+                   (:lem
+                    (when lem-button
+                      (notify-lem-pointer-button
+                       compositor x y lem-button pressed)))
+                   (:client
+                    (when (and seat
+                               (pointer-grab-owns-surface-p compositor))
+                      (%wlr-seat-pointer-notify-button
+                       seat time button state))))
+                 (unless (pointer-grab-active-p compositor)
+                   (resume-pointer-hover compositor surface sx sy))))
+              (pressed
+               (if surface
+                   (progn
+                     (setf (compositor-pointer-grab compositor) :client)
+                     (pushnew button
+                              (compositor-pointer-grab-buttons compositor))
+                     (ensure-pointer-focus compositor surface sx sy)
+                     (when *focus-client-function*
+                       (let ((toplevel
+                               (toplevel-for-surface compositor surface)))
+                         (when toplevel
+                           (funcall *focus-client-function*
+                                    (wayland-toplevel-id toplevel)))))
+                     (when seat
+                       (%wlr-seat-pointer-notify-button
+                        seat time button state)))
+                   (progn
+                     ;; Press on Lem content, a modeline, or a separator.
+                     (setf (compositor-pointer-grab compositor) :lem)
+                     (pushnew button
+                              (compositor-pointer-grab-buttons compositor))
+                     (focus-lem-content compositor)
+                     (when lem-button
+                       (notify-lem-pointer-button
+                        compositor x y lem-button t)))))
+              (t
+               ;; A release whose press we did not see.  Keep the client in
+               ;; sync if the pointer is over one; never start a grab here.
+               (when surface
+                 (ensure-pointer-focus compositor surface sx sy)
+                 (when seat
+                   (%wlr-seat-pointer-notify-button
+                    seat time button state)))))))))))
 
 (defun handle-pointer-axis (compositor event)
-  (when (and (compositor-seat compositor)
-             (compositor-pointer-focused-surface compositor))
-    (%wlr-seat-pointer-notify-axis
-     (compositor-seat compositor)
-     (u32-at event +wlr-pointer-axis-time+)
-     (u32-at event +wlr-pointer-axis-orientation+)
-     (double-at event +wlr-pointer-axis-delta+)
-     (i32-at event +wlr-pointer-axis-delta-discrete+)
-     (u32-at event +wlr-pointer-axis-source+)
-     +wl-pointer-axis-relative-direction-identical+)))
+  (let ((cursor (compositor-cursor compositor)))
+    (when cursor
+      (let ((x (double-at cursor +wlr-cursor-x+))
+            (y (double-at cursor +wlr-cursor-y+)))
+        (notify-lem-pointer-position compositor x y)
+        (cond
+          ((eq (compositor-pointer-grab compositor) :lem)
+           (notify-lem-wheel compositor event x y))
+          ((pointer-grab-owns-surface-p compositor)
+           (notify-client-pointer-axis compositor event))
+          (t
+           (multiple-value-bind (surface sx sy)
+               (scene-surface-at compositor x y)
+             (if (or (null surface) (null-pointer-p surface))
+                 (notify-lem-wheel compositor event x y)
+                 (progn
+                   (ensure-pointer-focus compositor surface sx sy)
+                   (notify-client-pointer-axis compositor event))))))))))
 
 (defun handle-pointer-frame (compositor)
   (when (compositor-seat compositor)
@@ -904,6 +1079,18 @@ see being pressed."
      (ptr-at event +wlr-seat-request-set-primary-selection-source+)
      (u32-at event +wlr-seat-request-set-primary-selection-serial+))))
 
+(defun handle-request-set-cursor (compositor event)
+  (let ((cursor (compositor-cursor compositor)))
+    (when cursor
+      (let ((surface (ptr-at event +wlr-seat-request-set-cursor-surface+)))
+        (if (null-pointer-p surface)
+            (restore-default-cursor compositor)
+            (%wlr-cursor-set-surface
+             cursor
+             surface
+             (i32-at event +wlr-seat-request-set-cursor-hotspot-x+)
+             (i32-at event +wlr-seat-request-set-cursor-hotspot-y+)))))))
+
 ;;;; xdg-shell clients
 
 (defun toplevel-target-size (compositor toplevel)
@@ -942,6 +1129,25 @@ see being pressed."
     (setf (wayland-toplevel-configured-p toplevel) t)
     (unless (null-pointer-p (wayland-toplevel-toplevel toplevel))
       (configure-toplevel compositor toplevel))))
+
+(defun acknowledge-toplevel-request (compositor toplevel)
+  "Send a configure event in reply to an xdg-toplevel state request.
+
+Lem decides every geometry itself, so maximize/fullscreen/minimize/move
+requests are acknowledged (the xdg-shell protocol requires a configure
+event) without changing the layout.  Resizing and moving stay available
+through Lem's window commands."
+  (when (and toplevel
+             (wayland-toplevel-configured-p toplevel)
+             (not (null-pointer-p (wayland-toplevel-toplevel toplevel))))
+    ;; Force configure-toplevel to emit a new event even when the size did
+    ;; not change, so the client's pending request is acknowledged.
+    (setf (wayland-toplevel-last-configured-width toplevel) 0
+          (wayland-toplevel-last-configured-height toplevel) 0)
+    (configure-toplevel compositor toplevel)))
+
+(defun handle-toplevel-state-request (compositor toplevel)
+  (acknowledge-toplevel-request compositor toplevel))
 
 (defun update-toplevel-sizes (compositor)
   (maphash (lambda (key toplevel)
@@ -1057,6 +1263,17 @@ see being pressed."
     (remove-signal-listener (wayland-toplevel-set-title-listener toplevel))
     (remove-signal-listener (wayland-toplevel-set-app-id-listener toplevel))
     (remove-signal-listener (wayland-toplevel-set-parent-listener toplevel))
+    (remove-signal-listener
+     (wayland-toplevel-request-maximize-listener toplevel))
+    (remove-signal-listener
+     (wayland-toplevel-request-fullscreen-listener toplevel))
+    (remove-signal-listener
+     (wayland-toplevel-request-minimize-listener toplevel))
+    (remove-signal-listener (wayland-toplevel-request-move-listener toplevel))
+    (remove-signal-listener
+     (wayland-toplevel-request-resize-listener toplevel))
+    (remove-signal-listener
+     (wayland-toplevel-request-show-window-menu-listener toplevel))
     (remhash (pointer-key surface) (compositor-toplevels compositor))
     (remhash (wayland-toplevel-id toplevel)
              (compositor-toplevels-by-id compositor))
@@ -1079,6 +1296,9 @@ see being pressed."
     (when (and (compositor-pointer-focused-surface compositor)
                (cffi:pointer-eq (compositor-pointer-focused-surface compositor)
                                 surface))
+      ;; A button may still be held when its window disappears.
+      (setf (compositor-pointer-grab compositor) nil
+            (compositor-pointer-grab-buttons compositor) '())
       (clear-pointer-focus compositor))
     (when *toplevel-destroyed-function*
       (funcall *toplevel-destroyed-function*
@@ -1228,6 +1448,45 @@ see being pressed."
                (setf (wayland-toplevel-parent-id toplevel) parent-id
                      (wayland-toplevel-floating-p toplevel)
                      (not (null parent-id)))))))
+    ;; xdg-shell requires compositors to answer state requests with a
+    ;; configure event.  Lem owns the layout, so the request itself is not
+    ;; applied by the compositor; the frontend exposes equivalent commands.
+    (setf (wayland-toplevel-request-maximize-listener toplevel)
+          (add-signal-listener
+           xdg-toplevel +wlr-xdg-toplevel-events-request-maximize+
+           (lambda (event)
+             (declare (ignore event))
+             (handle-toplevel-state-request compositor toplevel)))
+          (wayland-toplevel-request-fullscreen-listener toplevel)
+          (add-signal-listener
+           xdg-toplevel +wlr-xdg-toplevel-events-request-fullscreen+
+           (lambda (event)
+             (declare (ignore event))
+             (handle-toplevel-state-request compositor toplevel)))
+          (wayland-toplevel-request-minimize-listener toplevel)
+          (add-signal-listener
+           xdg-toplevel +wlr-xdg-toplevel-events-request-minimize+
+           (lambda (event)
+             (declare (ignore event))
+             (handle-toplevel-state-request compositor toplevel)))
+          (wayland-toplevel-request-move-listener toplevel)
+          (add-signal-listener
+           xdg-toplevel +wlr-xdg-toplevel-events-request-move+
+           (lambda (event)
+             (declare (ignore event))
+             (handle-toplevel-state-request compositor toplevel)))
+          (wayland-toplevel-request-resize-listener toplevel)
+          (add-signal-listener
+           xdg-toplevel +wlr-xdg-toplevel-events-request-resize+
+           (lambda (event)
+             (declare (ignore event))
+             (handle-toplevel-state-request compositor toplevel)))
+          (wayland-toplevel-request-show-window-menu-listener toplevel)
+          (add-signal-listener
+           xdg-toplevel +wlr-xdg-toplevel-events-request-show-window-menu+
+           (lambda (event)
+             (declare (ignore event))
+             (handle-toplevel-state-request compositor toplevel))))
     (format *error-output*
             "lem-wayland: new toplevel ~D title=~S app_id=~S~%"
             id
@@ -1692,10 +1951,13 @@ Must be called on the compositor event-loop thread."
         ;; The seat asserts that its signal lists are empty when destroyed as
         ;; part of wl_display_destroy.
         (remove-signal-listener
+         (compositor-seat-request-set-cursor-listener compositor))
+        (remove-signal-listener
          (compositor-seat-request-set-selection-listener compositor))
         (remove-signal-listener
          (compositor-seat-request-set-primary-selection-listener compositor))
-        (setf (compositor-seat-request-set-selection-listener compositor) nil
+        (setf (compositor-seat-request-set-cursor-listener compositor) nil
+              (compositor-seat-request-set-selection-listener compositor) nil
               (compositor-seat-request-set-primary-selection-listener compositor) nil)
         ;; wlr_keyboard_finish/wlr_pointer_finish assert that no listener is
         ;; attached to their signals when the backend destroys the devices.
@@ -1792,6 +2054,11 @@ Must be called on the compositor event-loop thread."
          (compositor-xdg-shell compositor) +wlr-xdg-shell-events-new-toplevel+
          (lambda (toplevel)
            (handle-new-toplevel compositor toplevel)))
+        (compositor-seat-request-set-cursor-listener compositor)
+        (add-signal-listener
+         (compositor-seat compositor) +wlr-seat-events-request-set-cursor+
+         (lambda (event)
+           (handle-request-set-cursor compositor event)))
         (compositor-seat-request-set-selection-listener compositor)
         (add-signal-listener
          (compositor-seat compositor) +wlr-seat-events-request-set-selection+

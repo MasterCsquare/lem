@@ -12,6 +12,7 @@
                (:file "src/queue")
                (:file "src/compositor")
                (:file "src/frontend")
+               (:file "src/commands")
                (:file "src/main")))
 
 (defsystem "lem-wayland/executable"

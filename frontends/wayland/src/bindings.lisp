@@ -531,6 +531,12 @@ REMOVE-SIGNAL-LISTENER when the owner is destroyed."
   (manager :pointer)
   (name :string))
 
+(cffi:defcfun ("wlr_cursor_set_surface" %wlr-cursor-set-surface) :void
+  (cursor :pointer)
+  (surface :pointer)
+  (hotspot-x :int)
+  (hotspot-y :int))
+
 (cffi:defcfun ("wlr_xcursor_manager_create" %wlr-xcursor-manager-create) :pointer
   (name :pointer)
   (size :uint32))
