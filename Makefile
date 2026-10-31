@@ -20,6 +20,11 @@ sdl2:
 	$(LISP) --load .qlot/setup.lisp \
 		--load scripts/build-sdl2.lisp
 
+wayland:
+	qlot install
+	$(LISP) --load .qlot/setup.lisp \
+		--load scripts/build-wayland.lisp
+
 sdl2-ncurses:
 	qlot install
 	-$(MAKE) terminal-lib
