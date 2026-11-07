@@ -37,8 +37,12 @@ loaded together with Lem. Enable it per buffer:
 (spell-check-mode t)
 ```
 
-or interactively with `M-x spell-check-mode`. To enable it
-automatically for particular major modes:
+or interactively with `M-x spell-check-mode`. While the mode is active,
+a transient popup at the bottom of the screen lists the key bindings
+described below. It appears when the mode is enabled, follows the
+current buffer, and disappears in buffers where the mode is off.
+
+To enable it automatically for particular major modes:
 
 ```lisp
 (add-hook *markdown-mode-hook*
@@ -50,14 +54,14 @@ automatically for particular major modes:
 | Key / command | Description |
 |---------------|-------------|
 | `M-$` (`spell-check-word`) | Check the word at point and prompt for a replacement, listing all suggestions |
-| `M-x spell-check-buffer` | Enable the mode if needed and check the whole buffer |
-| `M-x spell-check-region` | Check only the active region; later rescans and corrections stay inside it |
+| `M-s` (`spell-check-buffer`) | Enable the mode if needed and check the whole buffer |
+| `M-r` (`spell-check-region`) | Check only the active region; later rescans and corrections stay inside it |
 | `M-n` (`spell-check-next-error`) | Move to the next misspelled word |
 | `M-p` (`spell-check-previous-error`) | Move to the previous misspelled word |
 | `M-a` (`spell-check-add-word`) | Add the word at point to the personal dictionary |
-| `M-x spell-check-ignore-word` | Ignore the word for this session only |
-| `M-x spell-check-change-dictionary` | Choose the dictionary for this buffer |
-| `M-x spell-check-clear` | Remove the highlights until the next edit |
+| `M-i` (`spell-check-ignore-word`) | Ignore the word for this session only |
+| `C-c d` (`spell-check-change-dictionary`) | Choose the dictionary for this buffer |
+| `C-c c` (`spell-check-clear`) | Remove the highlights until the next edit |
 
 `spell-check-region` narrows all subsequent activity of the buffer's
 spell checker to the selected region: edits rescan the region,
