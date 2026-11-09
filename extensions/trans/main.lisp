@@ -3,13 +3,15 @@
   (:export #:*trans-program*
            #:*trans-target-language*
            #:*trans-source-language*
+           #:*trans-engine*
            #:*trans-extra-arguments*
            #:*trans-popup-timeout*
            #:*trans-popup-style*
            #:trans-translate-region
            #:trans-translate-symbol
            #:trans-translate-string
-           #:trans-set-target-language))
+           #:trans-set-target-language
+           #:trans-set-engine))
 (in-package #:lem-trans)
 
 (defvar *trans-program* "trans"
@@ -21,9 +23,13 @@
 (defvar *trans-source-language* nil
   "Source language code passed to `trans`, or NIL to let `trans` detect it.")
 
+(defvar *trans-engine* nil
+  "Default translation engine passed to `trans`, for example \"bing\".
+When NIL, `trans` chooses its default engine.")
+
 (defvar *trans-extra-arguments* '("-b" "-no-ansi" "-no-theme")
   "Command line arguments always passed to `trans`.
-Add engine or proxy options here, for example (\"-e\" \"bing\").")
+Add proxy or other options here, for example (\"-x\" \"127.0.0.1:7890\").")
 
 (defvar *trans-popup-timeout* 10
   "Seconds before a translation popup disappears.
@@ -33,11 +39,19 @@ When NIL, the popup stays visible until the next message is shown.")
   "Style plist used to display translation popups.")
 
 (defun trans--empty-string-p (text)
-  (string= "" (string-trim '(#\Space #\Tab #\Newline #\Return) text)))
+  (str:blankp text))
+
+(defun trans--check-program ()
+  "Signal a user-facing error when the translate-shell executable is missing."
+  (unless (exist-program-p *trans-program*)
+    (editor-error "translate-shell not found: ~A. Install translate-shell or set `lem-trans:*trans-program*'."
+                  *trans-program*)))
 
 (defun trans--command-line (target)
   (append (list *trans-program*)
           *trans-extra-arguments*
+          (when *trans-engine*
+            (list "-e" *trans-engine*))
           (when *trans-source-language*
             (list "-s" *trans-source-language*))
           (list "-t" target)))
@@ -53,13 +67,12 @@ Signal an error when `trans` exits with a non-zero status."
                         :external-format :utf-8
                         :ignore-error-status t)
     (unless (zerop exit-code)
-      (let ((message (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                  error-output)))
+      (let ((message (str:trim error-output)))
         (error "trans exited with code ~D~@[~A~]"
                exit-code
                (unless (string= message "")
                  (format nil ": ~A" message)))))
-    (string-right-trim '(#\Newline #\Return) output)))
+    (str:trim-right output)))
 
 (defun trans--translate-async (text command-line on-success &key on-finalize)
   "Translate TEXT with COMMAND-LINE in the background and call ON-SUCCESS on the editor thread.
@@ -92,6 +105,7 @@ ON-FINALIZE is called on the editor thread after success or failure."
 (defun trans--translate (text &key (on-success #'trans--show-result) on-finalize)
   (when (trans--empty-string-p text)
     (editor-error "No text to translate"))
+  (trans--check-program)
   (message-without-log "Translating...")
   (trans--translate-async
    text
@@ -161,3 +175,12 @@ translation, the popup is shown instead of replacing text."
                                      :history-symbol 'trans-target-language)))
     (unless (trans--empty-string-p language)
       (setf *trans-target-language* language))))
+
+(define-command trans-set-engine () ()
+  "Set the translation engine used by the trans commands for this session.
+An empty input restores the default engine selection."
+  (let ((engine (prompt-for-string "Engine (empty for default): "
+                                   :initial-value (or *trans-engine* "")
+                                   :history-symbol 'trans-engine)))
+    (setf *trans-engine* (unless (trans--empty-string-p engine)
+                           engine))))
