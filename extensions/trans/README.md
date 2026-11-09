@@ -29,8 +29,13 @@ needed.
 | `trans-translate-string` | Prompt for text and translate it. |
 | `trans-set-target-language` | Change the target language for this session. |
 | `trans-set-engine` | Change the translation engine for this session. |
+| `trans-help` | Show a summary of commands and options. |
 
 The default target language is English (`en`).
+
+> **Warning:** the default translation engine is Google. If Google Translate
+> is not reachable from your network, set another engine (for example `bing`;
+> run `trans -list-engines` to see the supported engines).
 
 ## Configuration
 
