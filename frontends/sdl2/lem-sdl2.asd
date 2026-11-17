@@ -4,6 +4,7 @@
                "sdl2-image"
                "lem/core"
                "lem/extensions"
+               "lem-darwin"
                "trivial-main-thread")
   :serial t
   :components ((:file "wm")

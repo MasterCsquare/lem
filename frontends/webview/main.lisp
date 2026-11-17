@@ -1,6 +1,6 @@
 (uiop:define-package :lem-webview
   (:use :cl)
-  (:import-from :lem-webview/darwin
+  (:import-from :lem-darwin/appearance
    :set-window-appearance
    :dispatch-set-window-appearance)
   (:export :*webview-handle*
@@ -30,7 +30,7 @@ Combines the JSON-RPC server protocol with a native webview window."))
            (progn
              (webview:webview-set-title w title)
              (webview:webview-set-size w width height 0)
-             (set-window-appearance w frame-color)
+             (set-window-appearance (webview:webview-get-window w) frame-color)
              (webview:webview-navigate w url)
              (webview:webview-run w))
         (setf *webview-handle* nil)
@@ -60,10 +60,12 @@ A watchdog thread hard-exits the process in case the loop fails to stop
                      :name "lem-webview exit watchdog")))
 
 (defmethod lem-if:set-frame-color ((implementation lem-server:jsonrpc) mode)
-  "Set the window frame to :dark or :light mode.
-Currently implemented for macOS via darwin.lisp; on other platforms this
-is a no-op. Can be called from any thread."
-  (dispatch-set-window-appearance mode))
+  "Set the native window's frame to MODE, :dark or :light.
+Implemented on macOS; elsewhere, or when no native window is running,
+this does nothing. Can be called from any thread."
+  (let ((handle *webview-handle*))
+    (when handle
+      (dispatch-set-window-appearance (webview:webview-get-window handle) mode))))
 
 (defun main (&optional (args (uiop:command-line-arguments)))
   (let ((port (lem/common/socket:random-available-port)))

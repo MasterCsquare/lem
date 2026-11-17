@@ -10,6 +10,10 @@ fetch.git = "https://github.com/lem-project/lem-mailbox"
 src.git = "https://github.com/lem-project/async-process"
 fetch.git = "https://github.com/lem-project/async-process"
 
+[cl-objc]
+src.git = "https://github.com/theangelperalta/cl-objc"
+fetch.git = "https://github.com/theangelperalta/cl-objc"
+
 [jsonrpc]
 src.git = "https://github.com/cxxxr/jsonrpc"
 fetch.git = "https://github.com/cxxxr/jsonrpc"

@@ -1,8 +1,8 @@
 (defsystem "lem-webview"
   :depends-on ("webview"
                "float-features"
-               "lem-server")
+               "lem-server"
+               "lem-darwin")
   :serial t
-  :components ((:file "darwin")
-               (:file "main")
+  :components ((:file "main")
                (:file "browser")))

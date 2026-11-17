@@ -259,6 +259,27 @@
           '';
         };
 
+        # Objective-C bridge used by lem-darwin, which loads it only on
+        # Apple Silicon Macs.
+        cl-objc = lisp.buildASDFSystem {
+          inherit (sources.cl-objc) pname src version;
+          systems = ["cl-objc"];
+          lispLibs = with lisp.pkgs; [
+            cffi
+            cffi-grovel
+            cffi-libffi
+            yacc
+            closer-mop
+            org_dot_tfeb_dot_hax
+            trivial-main-thread
+          ];
+        };
+
+        # lem-darwin depends on cl-objc only on Apple Silicon Macs.
+        darwinLispLibs = pkgs.lib.optionals (
+          pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64
+        ) [cl-objc];
+
         cl-webview = lisp.buildASDFSystem {
           inherit (sources.webview) pname src version;
           systems = ["webview"];
@@ -318,6 +339,30 @@
           enchant
         ];
 
+        makeLemDesktopItem = { terminal }: pkgs.makeDesktopItem {
+          name = "lem";
+          desktopName = "Lem";
+          comment = "Common Lisp editor/IDE with high expansibility";
+          exec = "lem %F";
+          mimeTypes = [
+            "text/english"
+            "text/plain"
+            "text/x-makefile"
+            "text/x-c++hdr"
+            "text/x-c++src"
+            "application/x-shellscript"
+            "text/x-c"
+            "text/x-c++"
+          ];
+          icon = "lem";
+          terminal = terminal;
+          type = "Application";
+          categories = [
+            "Development"
+            "TextEditor"
+          ];
+        };
+
         # The base derivation that other variants inherit from
         lem-base = lisp.buildASDFSystem {
           pname = "lem-base";
@@ -376,6 +421,12 @@
             wrapProgram $out/bin/lem \
               --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}" \
               --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+
+            mkdir -p $out/share/applications
+            cp ${makeLemDesktopItem {terminal = true;}}/share/applications/* $out/share/applications
+            mkdir -p $out/share/icons/hicolor/256x256/apps
+            cp ${./resources/lem.png} $out/share/icons/hicolor/256x256/apps/lem.png
+
             runHook postInstall
           '';
         });
@@ -391,6 +442,7 @@
           ];
           lispLibs =
             o.lispLibs
+            ++ darwinLispLibs
             ++ (with lisp.pkgs; [
               sdl2
               sdl2-ttf
@@ -415,6 +467,12 @@
             wrapProgram $out/bin/lem \
               --prefix LD_LIBRARY_PATH : "$LD_LIBRARY_PATH:${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}" \
               --prefix DYLD_LIBRARY_PATH : "$DYLD_LIBRARY_PATH"
+
+            mkdir -p $out/share/applications
+            cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* $out/share/applications
+            mkdir -p $out/share/icons/hicolor/256x256/apps
+            cp ${./resources/lem.png} $out/share/icons/hicolor/256x256/apps/lem.png
+
             runHook postInstall
           '';
         });
@@ -435,6 +493,7 @@
           lispLibs =
             o.lispLibs
             ++ [cl-webview]
+            ++ darwinLispLibs
             ++ (with lisp.pkgs; [
               float-features
               command-line-arguments
@@ -477,6 +536,12 @@
                 --prefix XDG_DATA_DIRS : "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}" \
                 --prefix XDG_DATA_DIRS : "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}" \
                 --prefix LD_LIBRARY_PATH : "${tree-sitter-grammars.json}:${tree-sitter-grammars.markdown}:${tree-sitter-grammars.yaml}:${tree-sitter-grammars.nix}:${tree-sitter-grammars.python}:${tree-sitter-grammars.javascript}:${tree-sitter-grammars.typescript}:${tree-sitter-grammars.go}:${tree-sitter-grammars.perl}:${tree-sitter-grammars.clojure}"
+
+              mkdir -p $out/share/applications
+              cp ${makeLemDesktopItem {terminal = false;}}/share/applications/* $out/share/applications
+              mkdir -p $out/share/icons/hicolor/256x256/apps
+              cp ${./resources/lem.png} $out/share/icons/hicolor/256x256/apps/lem.png
+
             ''
             else ''
               wrapProgram $out/bin/lem \

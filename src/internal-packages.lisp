@@ -622,6 +622,7 @@
    :push-buffer-point
    :pop-buffer-point
    :fake-cursor
+   :fake-cursor-p
    :cursor-saved-column
    :cursor-yank-start
    :cursor-yank-end
@@ -629,6 +630,7 @@
    :change-yank-end
    :cursor-mark
    :set-cursor-mark
+   :pop-cursor-mark-point
    :cursor-region-beginning
    :cursor-region-end
    :buffer-fake-cursors

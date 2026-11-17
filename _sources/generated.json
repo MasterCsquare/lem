@@ -19,6 +19,26 @@
         },
         "version": "3ea46fcd238fdda101b644221ecf5e311c171a21"
     },
+    "cl-objc": {
+        "cargoLocks": null,
+        "date": "2026-11-14",
+        "extract": null,
+        "name": "cl-objc",
+        "passthru": null,
+        "pinned": false,
+        "src": {
+            "deepClone": false,
+            "fetchSubmodules": false,
+            "leaveDotGit": false,
+            "name": null,
+            "rev": "5b59c1643c66700e007637c658cc966b59551839",
+            "sha256": "sha256-LmuihtR/g+DpkcV/YPrzNEcZenGheOxELSEP2UzhquA=",
+            "sparseCheckout": [],
+            "type": "git",
+            "url": "https://github.com/theangelperalta/cl-objc"
+        },
+        "version": "5b59c1643c66700e007637c658cc966b59551839"
+    },
     "jsonrpc": {
         "cargoLocks": null,
         "date": "2025-08-04",
