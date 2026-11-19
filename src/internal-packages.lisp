@@ -695,6 +695,7 @@
    :support-pixel-positioning-p
    :html-support-p
    :underline-color-support-p
+   :image-support-p
    :no-force-needed-p
    :set-foreground
    :set-background
@@ -836,6 +837,8 @@
    :get-mouse-position
    :get-char-width
    :get-char-height
+   :cell-height
+   :font-em-pixels
    :clear-to-end-of-window
    :js-eval
    :render-line

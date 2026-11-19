@@ -44,7 +44,12 @@ When rendering the DOM and a window in a one-to-one manner, no redraw is require
     :initform nil
     :initarg :support-pixel-positioning
     :reader support-pixel-positioning-p
-    :documentation "When true, the frontend supports pixel-based floating window positioning.")))
+    :documentation "When true, the frontend supports pixel-based floating window positioning.")
+   (image-support
+    :initform nil
+    :initarg :image-support
+    :reader image-support-p
+    :documentation "When true, the frontend can draw an image object.")))
 
 (defun get-default-implementation (&key implementation)
   (let ((classes (c2mop:class-direct-subclasses (find-class 'implementation)))
@@ -177,6 +182,20 @@ PIXEL-X, PIXEL-Y, PIXEL-WIDTH, PIXEL-HEIGHT are in pixels (may be nil for auto-c
 
 (defgeneric lem-if:get-char-width (implementation))
 (defgeneric lem-if:get-char-height (implementation))
+
+(defgeneric lem-if:cell-height (implementation)
+  (:documentation "Height of one character cell in the frontend's native layout units.
+Pixel frontends report pixels, cell-based frontends report 1.  This is
+`get-char-height' under the name pixel-oriented extensions use.")
+  (:method (implementation)
+    (lem-if:get-char-height implementation)))
+
+(defgeneric lem-if:font-em-pixels (implementation)
+  (:documentation "Pixels one em of the editor font takes, or NIL when the frontend
+cannot say.  Callers should fall back to `cell-height' when this returns NIL.")
+  (:method (implementation)
+    (declare (ignore implementation))
+    nil))
 
 (defgeneric lem-if:render-line (implementation view x y objects height))
 (defgeneric lem-if:render-line-on-modeline (implementation view left-objects right-objects

@@ -14,6 +14,38 @@
  (:class qlot/source/ql:source-ql
   :initargs (:%version :latest)
   :version "ql-2026-01-01"))
+("fiveam" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("clingon" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("ironclad" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("local-time" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("asdf-flv" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("bobbin" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("cl-reexport" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
+("with-user-abort" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
 ("micros" .
  (:class qlot/source/git:source-git
   :initargs (:remote-url "https://github.com/lem-project/micros.git")
@@ -78,3 +110,7 @@
  (:class qlot/source/git:source-git
   :initargs (:remote-url "https://github.com/aiffc/cl-sdl3.git")
   :version "git-47c90b54715aba23752b70d382a3eb310172cd34"))
+("cltpt" .
+ (:class qlot/source/git:source-git
+  :initargs (:remote-url "https://github.com/mahmoodsh36/cltpt.git")
+  :version "git-062928fd5a6049f2b258dfe96a7f91b084cff38e"))

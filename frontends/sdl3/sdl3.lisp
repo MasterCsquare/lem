@@ -8,6 +8,7 @@
   (:default-initargs
    :name :sdl3
    :redraw-after-modifying-floating-window nil
-   :underline-color-support t))
+   :underline-color-support t
+   :image-support t))
 
 (pushnew :lem-sdl3 *features*)

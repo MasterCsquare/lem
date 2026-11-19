@@ -531,6 +531,13 @@ nothing. Can be called from any thread."
   (display:with-display (display)
     (display:display-char-height display)))
 
+(defmethod lem-if:font-em-pixels ((implementation sdl3))
+  (display:with-display (display)
+    ;; The font is opened at a multiple of the configured size on a high-DPI
+    ;; display, and the cell metrics are measured from that font, so report
+    ;; the size the font was actually opened at.
+    (font-config-size (display:display-font-config display))))
+
 (defmethod lem-if:view-width ((implementation sdl3) view)
   (display:with-display (display)
     (* (display:display-char-width display)
