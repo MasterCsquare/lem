@@ -7,8 +7,9 @@
   ()
   (:default-initargs
    :name :sdl3
-   :redraw-after-modifying-floating-window nil
+   :redraw-after-modifying-floating-window nil))
+:support-pixel-positioning t
    :underline-color-support t
-   :image-support t))
+   :support-proportional-text t
 
 (pushnew :lem-sdl3 *features*)
